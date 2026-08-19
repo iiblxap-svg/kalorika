@@ -331,6 +331,12 @@ const VISION_KEY      = 'kalorika.vision';
 const GIGA_TOKEN_KEY  = 'kalorika.gigaToken';
 const MODEL_KEY       = 'kalorika.model';
 
+/* Приложение открыто с локального дев-сервера? Тогда прокси рядом, на /giga */
+function isLocalDev(){
+  return typeof location !== 'undefined'
+    && ['localhost','127.0.0.1'].includes(location.hostname);
+}
+
 const ls = {
   get(k, def=''){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } },
   set(k, v){ try{ v ? localStorage.setItem(k, v) : localStorage.removeItem(k); }catch(e){} },
@@ -340,8 +346,9 @@ const AI = {
   barcode:'openfoodfacts', // ключ из BARCODE_DRIVERS
 
   /* Способ распознавания выбирается на устройстве: на Маке удобнее прокси,
-     на телефоне для быстрой проверки — прямой токен */
-  get vision(){ return ls.get(VISION_KEY, 'none'); },
+     на телефоне для быстрой проверки — прямой токен.
+     На localhost прокси проброшен дев-сервером — настраивать нечего. */
+  get vision(){ return ls.get(VISION_KEY, isLocalDev() ? 'gigachat' : 'none'); },
   set vision(v){ ls.set(VISION_KEY, v); },
 
   get model(){ return ls.get(MODEL_KEY, 'GigaChat-2-Max'); },
@@ -351,7 +358,11 @@ const AI = {
   set directToken(v){ ls.set(GIGA_TOKEN_KEY, v && v.trim()); },
 
   /* Адрес прокси хранится отдельно от дневника: он про устройство, а не про данные */
-  get endpoint(){ try{ return localStorage.getItem(PROXY_KEY) || ''; }catch(e){ return ''; } },
+  get endpoint(){
+    const saved = ls.get(PROXY_KEY);
+    if(saved) return saved;
+    return isLocalDev() ? location.origin + '/giga' : '';
+  },
   set endpoint(v){ try{ v ? localStorage.setItem(PROXY_KEY, v) : localStorage.removeItem(PROXY_KEY); }catch(e){} },
 
   /* Общий секрет прокси. Не даёт посторонним тратить ваши токены. */
