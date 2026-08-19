@@ -717,6 +717,21 @@ function manualTab(){
   <div id="results">${foodResults('')}</div>`;
 }
 
+/* Поиск по-русски: «курица» должна находить «Куриная грудка».
+   Полноценная морфология тут избыточна — хватает отсечения окончаний. */
+const stem = w => w.toLowerCase().replace(/ё/g,'е')
+  .replace(/(ями|ами|иями|ого|его|ыми|ими|ая|яя|ые|ие|ой|ей|ом|ем|ах|ях|ов|ев|ы|и|а|я|у|ю|е|о)$/,'');
+
+function foodMatches(name, query){
+  const qs = query.split(/[\s,]+/).filter(Boolean).map(stem);
+  const ws = name.split(/[\s,.()\-–]+/).filter(Boolean).map(stem);
+  return qs.every(t => t.length >= 2 && ws.some(w =>
+    w.startsWith(t)
+    || (t.startsWith(w) && w.length >= 3)
+    /* «курица» и «куриная» дают разные основы — спасает общий корень */
+    || (t.length >= 4 && w.length >= 4 && t.slice(0,4) === w.slice(0,4))));
+}
+
 /* Что пользователь ест чаще всего — по всей истории дневника */
 function frequentFoods(){
   const by = {};
@@ -743,16 +758,18 @@ function foodResults(term){
   }
 
   let list = FOODS;
-  if(t) list = FOODS.filter(f=>f.name.toLowerCase().includes(t));
+  if(t) list = FOODS.filter(f=>foodMatches(f.name, t));
   else if(S.ui.addCat!=='all') list = FOODS.filter(f=>f.cat===S.ui.addCat);
 
   if(!list.length) return `<div class="empty">Ничего не нашлось</div>`;
-  return list.slice(0,40).map(f=>`
+  const shown = list.slice(0,80);
+  return shown.map(f=>`
     <div class="item clickable" data-act="pickFood" data-id="${f.id}">
       <div class="thumb">${CAT_BY_ID[f.cat]?.emoji || '🥗'}</div>
       <div class="body"><b>${esc(f.name)}</b><small>Б ${f.p} · Ж ${f.f} · У ${f.c} на 100 г</small></div>
       <div class="right"><b class="num">${f.kcal}</b><small>ккал/100</small></div>
-    </div>`).join('');
+    </div>`).join('') + (list.length > shown.length
+      ? `<p class="tiny" style="text-align:center;padding:10px">Показано ${shown.length} из ${list.length} — уточните запрос</p>` : '');
 }
 
 ACTIONS.back = () => history.length>1 ? history.back() : go('#/today');
