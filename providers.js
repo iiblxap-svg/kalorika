@@ -120,6 +120,25 @@ function downscaleImage(file, maxSide = 1024, quality = 0.85){
   });
 }
 
+/* Файл как есть, без пересжатия — запасной путь для форматов,
+   которые браузер не умеет декодировать (HEIC в Chrome) */
+function fileToBase64(file){
+  return new Promise((resolve, reject) => {
+    const rd = new FileReader();
+    rd.onload  = () => resolve(String(rd.result).split(',')[1]);
+    rd.onerror = () => reject(new ProviderError('Файл не прочитался'));
+    rd.readAsDataURL(file);
+  });
+}
+
+/* Что это за файл, если браузер не смог его открыть */
+function guessMime(file){
+  if(file.type) return file.type.toLowerCase();
+  const ext = (file.name || '').toLowerCase().split('.').pop();
+  return ({heic:'image/heic', heif:'image/heif', jpg:'image/jpeg', jpeg:'image/jpeg',
+           png:'image/png', webp:'image/webp'})[ext] || 'application/octet-stream';
+}
+
 /* ---------- Драйверы распознавания ---------- */
 const FOOD_VISION_DRIVERS = {
   /* Заглушка по умолчанию: честно говорит, что не подключено. */
@@ -184,7 +203,17 @@ const FOOD_VISION_DRIVERS = {
     available:true,
     async recognize(file){
       if(!AI.endpoint) throw new ProviderNotConfigured('Распознавание по фото');
-      const img = await downscaleImage(file);
+
+      /* Обычный путь: ужимаем в браузере. Не вышло — Safari умеет HEIC, Chrome нет —
+         отправляем оригинал, прокси сконвертирует. */
+      let img;
+      try{
+        img = await downscaleImage(file);
+      }catch(e){
+        if(file.size > 12 * 1024 * 1024)
+          throw new ProviderError('Файл больше 12 МБ, а сжать его браузер не смог');
+        img = {base64: await fileToBase64(file), mime: guessMime(file)};
+      }
 
       let res;
       try{

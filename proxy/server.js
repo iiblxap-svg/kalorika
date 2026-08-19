@@ -135,15 +135,53 @@ async function uploadImage(buf, mime){
   return JSON.parse(r.body.toString()).id;
 }
 
+/* ---------- HEIC ----------
+   Модель принимает такой файл и молча выдумывает ответ вместо ошибки,
+   поэтому конвертируем сами и никогда не отдаём HEIC дальше. */
+const { execFileSync } = require('child_process');
+
+function heicToJpeg(buf){
+  const tmp = path.join(os.tmpdir(), `kal-${crypto.randomBytes(6).toString('hex')}`);
+  const src = tmp + '.heic', dst = tmp + '.jpg';
+  fs.writeFileSync(src, buf);
+  const tools = [
+    ['sips', ['-s','format','jpeg', src, '--out', dst]],          // macOS
+    ['heif-convert', [src, dst]],                                  // libheif-examples
+    ['magick', [src, dst]],                                        // ImageMagick 7
+    ['convert', [src, dst]],                                       // ImageMagick 6
+  ];
+  try{
+    for(const [bin, args] of tools){
+      try{
+        execFileSync(bin, args, {stdio:'ignore'});
+        if(fs.existsSync(dst)) return fs.readFileSync(dst);
+      }catch(e){ /* нет такого инструмента — пробуем следующий */ }
+    }
+    throw new Error('Не могу открыть HEIC: на сервере нет sips, heif-convert или ImageMagick');
+  } finally {
+    try{ fs.unlinkSync(src); }catch(e){}
+    try{ fs.unlinkSync(dst); }catch(e){}
+  }
+}
+
 /* ---------- Распознавание блюда ---------- */
 const DEFAULT_MODEL = process.env.GIGACHAT_MODEL || 'GigaChat-2-Max';
 
 async function recognize({prompt, image, mime, model}){
   if(!prompt || !image) throw new Error('нужны поля prompt и image');
-  const buf = Buffer.from(image, 'base64');
+  let buf = Buffer.from(image, 'base64');
   if(buf.length > 12 * 1024 * 1024) throw new Error('картинка больше 12 МБ');
 
-  const fileId = await uploadImage(buf, mime || 'image/jpeg');
+  let type = (mime || 'image/jpeg').toLowerCase();
+  if(type === 'image/heic' || type === 'image/heif'){
+    buf = heicToJpeg(buf);
+    type = 'image/jpeg';
+  }
+  if(!['image/jpeg','image/png','image/webp'].includes(type)){
+    throw new Error(`Формат ${type} не поддерживается — нужен JPEG, PNG, WEBP или HEIC`);
+  }
+
+  const fileId = await uploadImage(buf, type);
 
   const r = await api('POST', '/v1/chat/completions', {'Content-Type':'application/json'},
     JSON.stringify({
