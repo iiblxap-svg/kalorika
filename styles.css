@@ -282,6 +282,23 @@ body.dark-screen .chip:not(.on){background:transparent;border-color:var(--line-d
 .exlist-row .w{font-size:14px;font-weight:600;color:var(--ink-2)}
 
 /* ============ Камера ============ */
+.shot{position:relative;border-radius:22px;overflow:hidden;background:#000}
+.shot img{display:block;width:100%;height:280px;object-fit:cover}
+.shot .veil{
+  position:absolute;inset:0;background:rgba(10,10,8,.72);backdrop-filter:blur(2px);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#fff;
+}
+.spinner{
+  width:42px;height:42px;border-radius:100px;
+  border:3px solid rgba(255,255,255,.18);border-top-color:var(--accent);
+  animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.shot .veil b{font-size:16px;font-weight:600}
+.shot .veil small{font-size:13px;color:rgba(255,255,255,.6)}
+.shot .veil.fail{background:rgba(10,10,8,.86)}
+.shot .veil .msg{font-size:14px;text-align:center;padding:0 24px;line-height:1.4}
+
 .cam{background:var(--dark);border-radius:var(--r-lg);padding:20px;color:#fff;text-align:center}
 .dropzone{
   border:1.5px solid rgba(255,255,255,.25);border-radius:22px;height:280px;

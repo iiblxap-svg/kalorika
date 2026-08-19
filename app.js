@@ -31,6 +31,10 @@ let S;
    почти нулевое, и запись падает с «The quota has been exceeded». */
 let draftPhoto = null;
 
+/* Состояние распознавания: файл, превью, идёт ли запрос, ошибка.
+   Только в памяти — на диск ему не надо. */
+let vision = {file:null, photo:null, busy:false, error:null, startedAt:0};
+
 /* Слияние сохранения с дефолтами: новые поля должны появляться у старых сохранений */
 function mergeState(obj){
   const d = defaultState();
@@ -677,7 +681,36 @@ function vAdd(seg, q){
 }
 
 function photoTab(){
-  if(AI.visionAvailable()) return `
+  if(AI.visionAvailable()){
+    if(vision.busy) return `
+      <div class="cam">
+        <div class="shot">
+          <img src="${vision.photo}" alt="">
+          <div class="veil">
+            <div class="spinner"></div>
+            <b>Распознаём блюдо</b>
+            <small id="vision-timer">${Math.round((Date.now()-vision.startedAt)/1000)} с</small>
+          </div>
+        </div>
+        <p class="tiny" style="margin:14px 0 0;color:var(--ink-3)">Обычно 4–8 секунд</p>
+      </div>`;
+
+    if(vision.error) return `
+      <div class="cam">
+        <div class="shot">
+          <img src="${vision.photo}" alt="">
+          <div class="veil fail">
+            <div style="font-size:30px">😕</div>
+            <div class="msg">${esc(vision.error)}</div>
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:14px">
+          <button class="btn btn-ghost-dark btn-sm" style="flex:1" data-act="visionReset">Другое фото</button>
+          <button class="btn btn-primary btn-sm" style="flex:1" data-act="visionRetry">Повторить</button>
+        </div>
+      </div>`;
+
+    return `
   <div class="cam">
     <div class="dropzone" id="dz">
       <div style="font-size:30px">🖼</div>
@@ -687,6 +720,7 @@ function photoTab(){
     <p class="tiny" style="margin:14px 0 0;color:var(--ink-3)">Наведите камеру так, чтобы тарелка попала целиком</p>
     <div class="shutter" id="shutter"></div>
   </div>`;
+  }
 
   return `
   <div class="card">
@@ -853,7 +887,7 @@ function bindAdd(){
     file.onchange = () => {
       const f = file.files[0]; if(!f) return;
       const rd = new FileReader();
-      rd.onload = () => { dz.style.backgroundImage=`url(${rd.result})`; dz.classList.add('filled'); dz.innerHTML=''; recognize(f, rd.result); };
+      rd.onload = () => recognize(f, rd.result);
       rd.readAsDataURL(f);
     };
     dz.ondragover = e => { e.preventDefault(); dz.classList.add('filled'); };
@@ -863,16 +897,45 @@ function bindAdd(){
 }
 
 async function recognize(file, photo){
-  toast('Распознаём блюдо…');
+  vision = {file, photo, busy:true, error:null, startedAt:Date.now()};
+  render();
+  startVisionTimer();
+
   try{
     const draft = await AI.recognizeFood(file);
     draft.photo = null;      // в состояние не кладём, см. draftPhoto
     draftPhoto = photo;
-    S.draft = draft; save(); go('#/portion');
+    S.draft = draft; save();
+    vision = {file:null, photo:null, busy:false, error:null, startedAt:0};
+    stopVisionTimer();
+    go('#/portion');
   }catch(e){
-    toast(e.name==='ProviderNotConfigured' ? 'Распознавание не подключено' : e.message);
+    vision.busy = false;
+    vision.error = e.name==='ProviderNotConfigured'
+      ? 'Распознавание не подключено — укажите прокси в профиле'
+      : e.message;
+    stopVisionTimer();
+    render();
   }
 }
+
+/* Секундомер поверх снимка: запрос идёт до десяти секунд, без него экран мёртвый */
+let visionTimer = null;
+function startVisionTimer(){
+  stopVisionTimer();
+  visionTimer = setInterval(() => {
+    const el = $('#vision-timer');
+    if(!el) return stopVisionTimer();
+    el.textContent = `${Math.round((Date.now()-vision.startedAt)/1000)} с`;
+  }, 250);
+}
+function stopVisionTimer(){ if(visionTimer) clearInterval(visionTimer); visionTimer = null; }
+
+ACTIONS.visionRetry = () => { if(vision.file) recognize(vision.file, vision.photo); };
+ACTIONS.visionReset = () => {
+  vision = {file:null, photo:null, busy:false, error:null, startedAt:0};
+  render();
+};
 
 /* ============================================================
    Экран: Результат и правка порции
