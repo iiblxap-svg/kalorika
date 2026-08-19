@@ -129,6 +129,54 @@ const FOOD_VISION_DRIVERS = {
     async recognize(){ throw new ProviderNotConfigured('Распознавание по фото'); }
   },
 
+  /* Прямой доступ из браузера по временному access token.
+     Нужен только для проверки: токен живёт 30 минут, ключ никуда не уходит.
+     Работает, если устройство доверяет корню Минцифры — иначе TLS не пройдёт. */
+  'gigachat-direct': {
+    label:'GigaChat напрямую',
+    available:true,
+    async recognize(file){
+      const tok = AI.directToken;
+      if(!tok) throw new ProviderNotConfigured('Распознавание по фото');
+      const API = 'https://api.giga.chat';
+      const auth = {'Authorization':'Bearer ' + tok};
+
+      const img = await downscaleImage(file);
+      const bin = Uint8Array.from(atob(img.base64), c => c.charCodeAt(0));
+
+      let fileId;
+      try{
+        const fd = new FormData();
+        fd.append('purpose', 'general');
+        fd.append('file', new Blob([bin], {type:'image/jpeg'}), 'dish.jpg');
+        const up = await fetch(API + '/v1/files', {method:'POST', headers:auth, body:fd});
+        if(up.status === 401) throw new ProviderError('Токен протух — получите новый');
+        if(!up.ok) throw new ProviderError(`Загрузка фото: ${up.status}`);
+        fileId = (await up.json()).id;
+      }catch(e){
+        if(e instanceof ProviderError) throw e;
+        throw new ProviderError('Не достучались до GigaChat. Устройство доверяет сертификату Минцифры?');
+      }
+
+      const t0 = Date.now();
+      const r = await fetch(API + '/v1/chat/completions', {
+        method:'POST',
+        headers: Object.assign({'Content-Type':'application/json'}, auth),
+        body: JSON.stringify({
+          model: AI.model, temperature: 0.1,
+          messages:[{role:'user', content: recognitionPrompt(), attachments:[fileId]}],
+        }),
+      });
+      if(r.status === 401) throw new ProviderError('Токен протух — получите новый');
+      if(!r.ok) throw new ProviderError(`Модель ответила ${r.status}`);
+      const j = await r.json();
+
+      const draft = parseRecognition(j.choices?.[0]?.message?.content || '');
+      draft.meta = {model:j.model, ms:Date.now()-t0, tokens:j.usage?.total_tokens};
+      return draft;
+    }
+  },
+
   /* GigaChat через собственный прокси. Ключ и обновление токена — на стороне прокси,
      браузер о них не знает. Адрес прокси настраивается в профиле. */
   gigachat: {
@@ -140,9 +188,11 @@ const FOOD_VISION_DRIVERS = {
 
       let res;
       try{
+        const headers = {'Content-Type':'application/json'};
+        if(AI.token) headers['X-Proxy-Token'] = AI.token;
         res = await fetch(AI.endpoint.replace(/\/$/,'') + '/recognize', {
           method:'POST',
-          headers:{'Content-Type':'application/json'},
+          headers,
           body: JSON.stringify({prompt: recognitionPrompt(), image: img.base64, mime: img.mime}),
         });
       }catch(e){ throw new ProviderError('Прокси недоступен — проверьте адрес в профиле'); }
@@ -246,21 +296,49 @@ const SCANNER = {
 };
 
 /* ---------- Фасад, которым пользуются экраны ---------- */
-const PROXY_KEY = 'kalorika.proxy';
+const PROXY_KEY       = 'kalorika.proxy';
+const PROXY_TOKEN_KEY = 'kalorika.proxyToken';
+const VISION_KEY      = 'kalorika.vision';
+const GIGA_TOKEN_KEY  = 'kalorika.gigaToken';
+const MODEL_KEY       = 'kalorika.model';
+
+const ls = {
+  get(k, def=''){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } },
+  set(k, v){ try{ v ? localStorage.setItem(k, v) : localStorage.removeItem(k); }catch(e){} },
+};
 
 const AI = {
-  vision:'gigachat',       // ключ из FOOD_VISION_DRIVERS
   barcode:'openfoodfacts', // ключ из BARCODE_DRIVERS
+
+  /* Способ распознавания выбирается на устройстве: на Маке удобнее прокси,
+     на телефоне для быстрой проверки — прямой токен */
+  get vision(){ return ls.get(VISION_KEY, 'none'); },
+  set vision(v){ ls.set(VISION_KEY, v); },
+
+  get model(){ return ls.get(MODEL_KEY, 'GigaChat-2-Max'); },
+  set model(v){ ls.set(MODEL_KEY, v); },
+
+  get directToken(){ return ls.get(GIGA_TOKEN_KEY); },
+  set directToken(v){ ls.set(GIGA_TOKEN_KEY, v && v.trim()); },
 
   /* Адрес прокси хранится отдельно от дневника: он про устройство, а не про данные */
   get endpoint(){ try{ return localStorage.getItem(PROXY_KEY) || ''; }catch(e){ return ''; } },
   set endpoint(v){ try{ v ? localStorage.setItem(PROXY_KEY, v) : localStorage.removeItem(PROXY_KEY); }catch(e){} },
 
+  /* Общий секрет прокси. Не даёт посторонним тратить ваши токены. */
+  get token(){ try{ return localStorage.getItem(PROXY_TOKEN_KEY) || ''; }catch(e){ return ''; } },
+  set token(v){ try{ v ? localStorage.setItem(PROXY_TOKEN_KEY, v) : localStorage.removeItem(PROXY_TOKEN_KEY); }catch(e){} },
+
   get visionDriver(){  return FOOD_VISION_DRIVERS[this.vision]  || FOOD_VISION_DRIVERS.none; },
   get barcodeDriver(){ return BARCODE_DRIVERS[this.barcode]     || BARCODE_DRIVERS.mock; },
 
-  /* Драйвер есть — мало. Без адреса прокси он всё равно не работает. */
-  visionAvailable(){  return !!this.visionDriver.available && !!this.endpoint; },
+  /* Драйвер есть — мало: прокси нужен адрес, прямому режиму — токен */
+  visionAvailable(){
+    if(!this.visionDriver.available) return false;
+    if(this.vision === 'gigachat')        return !!this.endpoint;
+    if(this.vision === 'gigachat-direct') return !!this.directToken;
+    return false;
+  },
   barcodeAvailable(){ return !!this.barcodeDriver.available; },
 
   recognizeFood(file){ return this.visionDriver.recognize(file); },

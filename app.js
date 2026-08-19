@@ -1576,11 +1576,36 @@ function vProfile(){
 
   <h2>Распознавание</h2>
   <div class="card">
-    <label class="field"><span>Адрес прокси распознавания</span>
-      <input id="pf-proxy" value="${esc(AI.endpoint)}" placeholder="http://localhost:4322" inputmode="url"></label>
+    <label class="field"><span>Способ</span>
+      <select id="pf-vision">
+        <option value="none" ${AI.vision==='none'?'selected':''}>Выключено</option>
+        <option value="gigachat" ${AI.vision==='gigachat'?'selected':''}>GigaChat через прокси</option>
+        <option value="gigachat-direct" ${AI.vision==='gigachat-direct'?'selected':''}>GigaChat напрямую (проверка)</option>
+      </select></label>
+
+    ${AI.vision==='gigachat-direct' ? `
+    <label class="field"><span>Временный access token</span>
+      <textarea id="pf-giga-token" rows="3" placeholder="вставьте токен, живёт 30 минут"
+        style="font-size:12px;word-break:break-all">${esc(AI.directToken)}</textarea></label>
+    <p class="tiny" style="margin:-6px 0 12px">Ключ аккаунта при этом никуда не уходит.
+      Токен протухнет через 30 минут — просто вставите новый.
+      Устройство должно доверять сертификату Минцифры, иначе соединение не установится.</p>
+    ` : AI.vision==='gigachat' ? `
+    <label class="field"><span>Адрес прокси</span>
+      <input id="pf-proxy" value="${esc(AI.endpoint)}" placeholder="https://…" inputmode="url"></label>
+    <label class="field"><span>Секрет прокси</span>
+      <input id="pf-proxy-token" value="${esc(AI.token)}" placeholder="если задан на прокси" autocomplete="off"></label>
+    ` : ''}
+
+    <label class="field"><span>Модель</span>
+      <select id="pf-model">
+        ${['GigaChat-2','GigaChat-2-Pro','GigaChat-2-Max','GigaChat-3-Ultra']
+          .map(m=>`<option value="${m}" ${AI.model===m?'selected':''}>${m}</option>`).join('')}
+      </select></label>
+
     <div class="btn-row">
-      <button class="btn btn-ghost btn-sm" style="flex:1" data-act="proxyCheck">Проверить</button>
-      <button class="btn btn-dark btn-sm" style="flex:1" data-act="proxySave">Сохранить адрес</button>
+      ${AI.vision==='gigachat'?`<button class="btn btn-ghost btn-sm" style="flex:1" data-act="proxyCheck">Проверить</button>`:''}
+      <button class="btn btn-dark btn-sm" style="flex:1" data-act="proxySave">Сохранить</button>
     </div>
     <div id="proxy-status" class="tiny" style="margin-top:10px">
       Фото: ${AI.visionAvailable()?`подключено · ${esc(AI.visionDriver.label)}`:'адрес не задан'} ·
@@ -1637,10 +1662,20 @@ ACTIONS.resetData = () => { if(confirm('Удалить все данные и н
 ACTIONS.importPick = () => $('#import-file')?.click();
 
 ACTIONS.proxySave = () => {
-  const v = ($('#pf-proxy').value || '').trim().replace(/\/$/,'');
-  if(v && !/^https?:\/\//.test(v)) return toast('Адрес должен начинаться с http:// или https://');
-  AI.endpoint = v;
-  render(); toast(v ? 'Адрес сохранён' : 'Распознавание отключено');
+  AI.vision = $('#pf-vision').value;
+  AI.model  = $('#pf-model').value;
+
+  if(AI.vision === 'gigachat'){
+    const v = ($('#pf-proxy')?.value || '').trim().replace(/\/$/,'');
+    if(v && !/^https?:\/\//.test(v)) return toast('Адрес должен начинаться с http:// или https://');
+    AI.endpoint = v;
+    AI.token = ($('#pf-proxy-token')?.value || '').trim();
+  }
+  if(AI.vision === 'gigachat-direct'){
+    AI.directToken = ($('#pf-giga-token')?.value || '').trim();
+  }
+  render();
+  toast(AI.visionAvailable() ? 'Распознавание включено' : 'Не хватает данных для подключения');
 };
 
 ACTIONS.proxyCheck = async () => {
@@ -1653,6 +1688,7 @@ ACTIONS.proxyCheck = async () => {
     const j = await r.json();
     box.innerHTML = j.ok
       ? `Прокси отвечает. Ключ ${j.hasKey?'на месте':'<b>не найден</b>'}, scope ${esc(j.scope||'—')}` +
+        (j.tokenRequired ? ', требует секрет' : '') +
         (j.tokenCached ? `, токен живёт ещё ${Math.round(j.tokenExpiresIn/60)} мин` : '')
       : 'Прокси ответил, но не готов';
   }catch(e){
@@ -1683,6 +1719,8 @@ function applyImport(text){
 }
 
 function bindProfile(){
+  const vis = $('#pf-vision');
+  if(vis) vis.onchange = () => { AI.vision = vis.value; render(); };
   const file = $('#import-file');
   if(file) file.onchange = () => {
     const f = file.files[0]; if(!f) return;

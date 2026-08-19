@@ -23,6 +23,17 @@ const SCOPE     = process.env.GIGACHAT_SCOPE || 'GIGACHAT_API_PERS';
 const OAUTH_URL = 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth';
 const API_HOST  = 'api.giga.chat';
 
+/* Общий секрет. Пока прокси на localhost — не обязателен.
+   Как только он смотрит наружу через туннель, без него любой желающий
+   потратит ваши токены. Задаётся через PROXY_TOKEN или ~/.gigachat_proxy_token. */
+function readProxyToken(){
+  if(process.env.PROXY_TOKEN) return process.env.PROXY_TOKEN.trim();
+  const f = path.join(os.homedir(), '.gigachat_proxy_token');
+  if(fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim();
+  return '';
+}
+const PROXY_TOKEN = readProxyToken();
+
 /* Разрешённые источники запросов */
 const ALLOWED_ORIGINS = [
   'http://localhost:4321',
@@ -159,7 +170,7 @@ function cors(req, res){
     res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Proxy-Token');
 }
 const json = (res, code, obj) => {
   res.writeHead(code, {'Content-Type':'application/json; charset=utf-8'});
@@ -179,10 +190,21 @@ const server = http.createServer(async (req, res) => {
     if(url.pathname === '/health'){
       const hasKey = !!(process.env.GIGACHAT_KEY || fs.existsSync(path.join(os.homedir(), '.gigachat_key')));
       return json(res, 200, {
-        ok: true, hasKey, scope: SCOPE,
+        ok: true, hasKey, scope: SCOPE, tokenRequired: !!PROXY_TOKEN,
         tokenCached: !!tokenCache.value,
         tokenExpiresIn: tokenCache.value ? Math.max(0, Math.round((tokenCache.expiresAt - Date.now())/1000)) : 0,
       });
+    }
+
+    /* Временный токен для проверки «браузер ходит в GigaChat напрямую».
+       Живёт 30 минут, ключ при этом наружу не уходит. Закрыт тем же секретом. */
+    if(url.pathname === '/token'){
+      if(PROXY_TOKEN && req.headers['x-proxy-token'] !== PROXY_TOKEN
+         && url.searchParams.get('t') !== PROXY_TOKEN){
+        return json(res, 401, {error:'нужен секрет прокси'});
+      }
+      const t = await getToken();
+      return json(res, 200, {access_token: t, expires_in: Math.round((tokenCache.expiresAt - Date.now())/1000)});
     }
 
     if(url.pathname === '/models'){
@@ -192,6 +214,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if(url.pathname === '/recognize' && req.method === 'POST'){
+      if(PROXY_TOKEN && req.headers['x-proxy-token'] !== PROXY_TOKEN){
+        console.log('отклонён запрос без верного секрета');
+        return json(res, 401, {error:'Неверный секрет прокси — проверьте настройку в профиле'});
+      }
       const body = await readBody(req);
       if(body.length > 20 * 1024 * 1024) return json(res, 413, {error:'запрос слишком большой'});
       let payload;
@@ -223,6 +249,10 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`прокси GigaChat: http://localhost:${PORT}`);
-  console.log(`  /health  — состояние и наличие ключа`);
-  console.log(`  /models  — список моделей аккаунта`);
+  console.log(`  /health    — состояние и наличие ключа`);
+  console.log(`  /models    — список моделей аккаунта`);
+  console.log(`  /recognize — распознавание блюда`);
+  console.log(PROXY_TOKEN
+    ? '  защита: включена, /recognize требует заголовок X-Proxy-Token'
+    : '  ВНИМАНИЕ: секрет не задан. Наружу такой прокси выставлять нельзя.');
 });
