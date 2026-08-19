@@ -60,17 +60,51 @@ confidence — насколько уверен в определении блю�
 Если на фото не еда, верни {"dish":null,"items":[]}.`;
 }
 
+/* Вытаскиваем JSON из ответа: перед ним рассуждения, вокруг бывает ```json,
+   а после — пояснения. Считаем скобки, чтобы не поймать лишнего. */
+function extractJson(text){
+  const t = String(text).replace(/```json/gi, '```');
+  const from = t.lastIndexOf('{"dish"') >= 0 ? t.lastIndexOf('{"dish"') : t.indexOf('{');
+  if(from < 0) return null;
+
+  const stack = [];
+  let inStr = false, esc = false;
+  for(let i = from; i < t.length; i++){
+    const ch = t[i];
+    if(esc){ esc = false; continue; }
+    if(ch === '\\'){ esc = true; continue; }
+    if(ch === '"'){ inStr = !inStr; continue; }
+    if(inStr) continue;
+
+    if(ch === '{' || ch === '[') stack.push(ch === '{' ? '}' : ']');
+    else if(ch === '}' || ch === ']'){
+      stack.pop();
+      if(!stack.length) return t.slice(from, i + 1);
+    }
+  }
+
+  /* Ответ оборвался: дозакрываем всё, что осталось открытым */
+  if(stack.length){
+    let tail = t.slice(from);
+    if(inStr) tail += '"';
+    tail = tail.replace(/,\s*$/, '').replace(/:\s*$/, ':0');
+    while(stack.length) tail += stack.pop();
+    return tail;
+  }
+  return null;
+}
+
 /* Разбор и валидация ответа драйвера → черновик для экрана правки порции */
 function parseRecognition(raw){
   let d = raw;
   if(typeof d === 'string'){
-    /* Модель сначала рассуждает, JSON идёт последним — берём последний объект */
-    const open = d.lastIndexOf('{"dish"') >= 0 ? d.lastIndexOf('{"dish"') : d.indexOf('{');
-    const close = d.lastIndexOf('}');
-    const m = open >= 0 && close > open ? [d.slice(open, close + 1)] : null;
-    if(!m) throw new ProviderError('Ответ не содержит JSON');
-    try{ d = JSON.parse(m[0]); }
-    catch(e){ throw new ProviderError('JSON не разобрался: '+e.message); }
+    const json = extractJson(d);
+    if(!json) throw new ProviderError('Ответ не содержит JSON');
+    try{ d = JSON.parse(json); }
+    catch(e){
+      console.warn('Не разобрали ответ модели:', d);
+      throw new ProviderError('Модель ответила неразборчиво');
+    }
   }
   if(!d || typeof d !== 'object') throw new ProviderError('Пустой ответ');
   if(!d.dish || !Array.isArray(d.items) || !d.items.length)
@@ -214,7 +248,17 @@ const FOOD_VISION_DRIVERS = {
   gigachat: {
     label:'GigaChat',
     available:true,
+    /* Модель изредка отдаёт битый JSON. Разбор строгий, поэтому один
+       автоматический повтор — дешевле, чем ошибка в лицо пользователю. */
     async recognize(file){
+      try{ return await this.once(file); }
+      catch(e){
+        if(e.name !== 'ProviderError' || !/неразборчиво|не содержит JSON/.test(e.message)) throw e;
+        console.warn('Повтор запроса после неразборчивого ответа');
+        return await this.once(file);
+      }
+    },
+    async once(file){
       if(!AI.endpoint) throw new ProviderNotConfigured('Распознавание по фото');
 
       /* Обычный путь: ужимаем в браузере. Не вышло — Safari умеет HEIC, Chrome нет —
