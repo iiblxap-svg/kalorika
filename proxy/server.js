@@ -131,7 +131,7 @@ async function uploadImage(buf, mime){
     'Content-Type': `multipart/form-data; boundary=${B}`,
     'Content-Length': body.length,
   }, body);
-  if(r.status !== 200) throw new Error(`Загрузка файла: ${r.status} ${r.body.toString().slice(0,200)}`);
+  if(r.status !== 200) throw new Error('Загрузка фото: ' + explain(r.status, r.body.toString()).text);
   return JSON.parse(r.body.toString()).id;
 }
 
@@ -167,6 +167,22 @@ function heicToJpeg(buf){
 /* ---------- Распознавание блюда ---------- */
 const DEFAULT_MODEL = process.env.GIGACHAT_MODEL || 'GigaChat-2-Max';
 
+/* Ответы GigaChat на человеческий */
+function explain(status, raw){
+  let msg = '';
+  try{ msg = JSON.parse(raw).message || ''; }catch(e){ msg = String(raw).slice(0,200); }
+  const m = msg.toLowerCase();
+
+  if(m.includes('quota'))            return {text:'Лимит запросов исчерпан. Подождите минуту и повторите.', retry:true};
+  if(m.includes('does not support image')) return {text:'Эта модель не понимает картинки. Возьмите GigaChat-2-Pro, Max или 3-Ultra.', retry:false};
+  if(status === 429)                 return {text:'Слишком часто. Подождите немного.', retry:true};
+  if(status === 401)                 return {text:'Авторизация не прошла — проверьте ключ.', retry:false};
+  if(status >= 500)                  return {text:'GigaChat недоступен, попробуйте ещё раз.', retry:true};
+  return {text: msg || `Ошибка ${status}`, retry:false};
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function recognize({prompt, image, mime, model}){
   if(!prompt || !image) throw new Error('нужны поля prompt и image');
   let buf = Buffer.from(image, 'base64');
@@ -183,14 +199,24 @@ async function recognize({prompt, image, mime, model}){
 
   const fileId = await uploadImage(buf, type);
 
-  const r = await api('POST', '/v1/chat/completions', {'Content-Type':'application/json'},
-    JSON.stringify({
-      model: model || DEFAULT_MODEL,
-      temperature: 0.1,        /* распознавание, а не сочинение */
-      messages: [{ role:'user', content: prompt, attachments:[fileId] }],
-    }));
+  const payload = JSON.stringify({
+    model: model || DEFAULT_MODEL,
+    temperature: 0.1,        /* распознавание, а не сочинение */
+    messages: [{ role:'user', content: prompt, attachments:[fileId] }],
+  });
 
-  if(r.status !== 200) throw new Error(`Модель ответила ${r.status}: ${r.body.toString().slice(0,300)}`);
+  /* Лимиты у них плавающие — на временных ошибках пробуем ещё дважды */
+  let r, err;
+  for(let attempt = 0; attempt < 3; attempt++){
+    if(attempt) await sleep(attempt * 3000);
+    r = await api('POST', '/v1/chat/completions', {'Content-Type':'application/json'}, payload);
+    if(r.status === 200) break;
+    err = explain(r.status, r.body.toString());
+    console.log(`попытка ${attempt+1}: ${r.status} — ${err.text}`);
+    if(!err.retry) break;
+  }
+  if(r.status !== 200) throw new Error(err.text);
+
   const j = JSON.parse(r.body.toString());
   return {
     text: j.choices?.[0]?.message?.content || '',
