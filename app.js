@@ -26,6 +26,11 @@ const defaultState = () => ({
 
 let S;
 
+/* Фото блюда держим только в памяти. В localStorage ему не место:
+   картинка в base64 — это мегабайты, а в приватном режиме хранилище
+   почти нулевое, и запись падает с «The quota has been exceeded». */
+let draftPhoto = null;
+
 /* Слияние сохранения с дефолтами: новые поля должны появляться у старых сохранений */
 function mergeState(obj){
   const d = defaultState();
@@ -53,7 +58,20 @@ function load(){
     return mergeState(JSON.parse(raw));
   }catch(e){ return seed(defaultState()); }
 }
-function save(){ localStorage.setItem(KEY, JSON.stringify(S)); }
+function save(){
+  try{
+    localStorage.setItem(KEY, JSON.stringify(S));
+  }catch(e){
+    /* Переполнение: чаще всего это приватный режим с крошечной квотой */
+    const quota = e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message||''));
+    console.warn('Не удалось сохранить состояние:', e);
+    if(typeof toast === 'function'){
+      toast(quota
+        ? 'Браузер не даёт сохранить данные. В приватном режиме хранилище почти нулевое — откройте обычное окно.'
+        : 'Не удалось сохранить данные');
+    }
+  }
+}
 function reset(){ localStorage.removeItem(KEY); S = seed(defaultState()); save(); location.hash='#/onboarding'; render(); }
 
 /* ---------- Даты ---------- */
@@ -848,7 +866,8 @@ async function recognize(file, photo){
   toast('Распознаём блюдо…');
   try{
     const draft = await AI.recognizeFood(file);
-    draft.photo = photo;
+    draft.photo = null;      // в состояние не кладём, см. draftPhoto
+    draftPhoto = photo;
     S.draft = draft; save(); go('#/portion');
   }catch(e){
     toast(e.name==='ProviderNotConfigured' ? 'Распознавание не подключено' : e.message);
@@ -871,7 +890,7 @@ function vPortion(){
     <div style="width:44px"></div>
   </div>
 
-  ${d.photo?`<div style="height:150px;border-radius:var(--r-lg);background:url(${d.photo}) center/cover;margin-bottom:14px"></div>`:''}
+  ${draftPhoto?`<div style="height:150px;border-radius:var(--r-lg);background:url(${draftPhoto}) center/cover;margin-bottom:14px"></div>`:''}
   <h1>${d.emoji} ${esc(d.name)}</h1>
   <p class="sub">Порция ${grams} г · ${d.ing.length} ${plural(d.ing.length,'ингредиент','ингредиента','ингредиентов')}${
     typeof d.confidence === 'number' ? ` · уверенность ${Math.round(d.confidence*100)}%` : ''}</p>
@@ -955,6 +974,7 @@ ACTIONS.delIng = ds => {
 };
 ACTIONS.saveFood = () => {
   const d = S.draft, date = S.ui.diaryDate || today();
+  draftPhoto = null;
   const meal = $('#p-meal').value;
   const m = foodFromIngredients(d.ing);
   const now = new Date();
