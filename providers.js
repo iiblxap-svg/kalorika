@@ -32,30 +32,22 @@ class ProviderError extends Error {
    Модель ошибается в арифметике, а база нет.
    ============================================================ */
 
-/* Список продуктов для промпта — чтобы модель выбирала из наших id */
-function foodCatalogForPrompt(){
-  return FOODS.map(f=>`${f.id} — ${f.name}`).join('\n');
-}
-
-/* Общий промпт. Один на всех провайдеров — иначе сравнение бессмысленно. */
+/* Промпт намеренно без каталога продуктов: 383 позиции — это лишние 3,5 тысячи
+   токенов в каждом запросе. Модель называет продукты словами, а сопоставляем
+   мы сами через findFoodByName() — там же, где живёт поиск по базе. */
 function recognitionPrompt(){
-  return `Ты определяешь состав блюда по фотографии для дневника питания.
+  return `Определи блюдо на фотографии и его состав для дневника питания.
 
 Верни ТОЛЬКО JSON, без markdown-обёртки и без пояснений:
 {"dish":"название блюда","emoji":"один эмодзи","confidence":0.0-1.0,
- "items":[{"id":"<id из списка>","grams":<число>}]}
-
-Если продукта нет в списке ниже, вместо "id" передай:
-{"name":"название","grams":<число>,"per100":{"kcal":N,"p":N,"f":N,"c":N}}
+ "items":[{"name":"продукт","grams":<число>,"per100":{"kcal":N,"p":N,"f":N,"c":N}}]}
 
 Правила:
-- Оценивай вес каждого компонента в граммах по виду порции на фото.
-- Не считай калории — их посчитает приложение.
-- Названия блюда и продуктов — на русском.
-- Если на фото не еда, верни {"dish":null,"items":[]}.
-
-Доступные id продуктов:
-${foodCatalogForPrompt()}`;
+- Разбей блюдо на отдельные продукты. Вес каждого оцени в граммах по виду порции на фото.
+- per100 — калорийность и БЖУ на 100 г этого продукта в готовом виде.
+- Названия продуктов простые и русские: «Куриная грудка», «Рис отварной», «Соус томатный».
+- Не считай итог по блюду — приложение посчитает само.
+- Если на фото не еда, верни {"dish":null,"items":[]}.`;
 }
 
 /* Разбор и валидация ответа драйвера → черновик для экрана правки порции */
@@ -71,15 +63,25 @@ function parseRecognition(raw){
   if(!d.dish || !Array.isArray(d.items) || !d.items.length)
     throw new ProviderError('На фото не распознана еда');
 
+  let matched = 0;
   const ing = d.items.map(it=>{
     const g = Math.round(+it.grams || 0);
     if(g <= 0) return null;
-    if(it.id && FOOD_BY_ID[it.id]) return {id:it.id, g};
-    if(it.name && it.per100){
-      const p = it.per100;
+
+    /* Драйвер может прислать готовый id — уважаем */
+    if(it.id && FOOD_BY_ID[it.id]){ matched++; return {id:it.id, g}; }
+
+    /* Сначала ищем в своей базе: её числа выверены и не меняются от запроса к запросу */
+    const hit = findFoodByName(it.name);
+    if(hit){ matched++; return {id:hit.id, g}; }
+
+    /* Не нашли — берём оценку модели, помечая происхождение */
+    const p = it.per100;
+    if(it.name && p && (+p.kcal > 0)){
       return {g, custom:{
         name:String(it.name).slice(0,60),
-        kcal:+p.kcal||0, p:+p.p||0, f:+p.f||0, c:+p.c||0
+        kcal:+p.kcal||0, p:+p.p||0, f:+p.f||0, c:+p.c||0,
+        fromModel:true,
       }};
     }
     return null;
@@ -91,8 +93,31 @@ function parseRecognition(raw){
     name: String(d.dish).slice(0,80),
     emoji: d.emoji || '🍽',
     confidence: typeof d.confidence==='number' ? d.confidence : null,
+    matched, total: ing.length,
     ing, photo:null,
   };
+}
+
+/* Уменьшаем картинку перед отправкой: меньше трафика и меньше токенов.
+   1024 px по длинной стороне модели достаточно, а стоит заметно дешевле оригинала. */
+function downscaleImage(file, maxSide = 1024, quality = 0.85){
+  return new Promise((resolve, reject) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width  = Math.round(img.width  * k);
+      c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve({
+        base64: c.toDataURL('image/jpeg', quality).split(',')[1],
+        mime:'image/jpeg', w:c.width, h:c.height,
+      });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new ProviderError('Не удалось прочитать изображение')); };
+    img.src = url;
+  });
 }
 
 /* ---------- Драйверы распознавания ---------- */
@@ -104,22 +129,35 @@ const FOOD_VISION_DRIVERS = {
     async recognize(){ throw new ProviderNotConfigured('Распознавание по фото'); }
   },
 
-  /* Шаблон для реального драйвера. Прокси прячет ключ, клиент его не видит.
-     Раскомментировать и указать URL, когда прокси будет поднят.
-
-  proxy: {
-    label:'через прокси',
+  /* GigaChat через собственный прокси. Ключ и обновление токена — на стороне прокси,
+     браузер о них не знает. Адрес прокси настраивается в профиле. */
+  gigachat: {
+    label:'GigaChat',
     available:true,
     async recognize(file){
-      const body = new FormData();
-      body.append('image', file);
-      body.append('prompt', recognitionPrompt());
-      const res = await fetch(AI.endpoint, {method:'POST', body});
-      if(!res.ok) throw new ProviderError(`Прокси ответил ${res.status}`);
-      return parseRecognition(await res.text());
+      if(!AI.endpoint) throw new ProviderNotConfigured('Распознавание по фото');
+      const img = await downscaleImage(file);
+
+      let res;
+      try{
+        res = await fetch(AI.endpoint.replace(/\/$/,'') + '/recognize', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({prompt: recognitionPrompt(), image: img.base64, mime: img.mime}),
+        });
+      }catch(e){ throw new ProviderError('Прокси недоступен — проверьте адрес в профиле'); }
+
+      if(!res.ok){
+        let msg = `Прокси ответил ${res.status}`;
+        try{ const j = await res.json(); if(j.error) msg = j.error; }catch(e){}
+        throw new ProviderError(msg);
+      }
+      const j = await res.json();
+      const draft = parseRecognition(j.text);
+      draft.meta = {model:j.model, ms:j.ms, tokens:j.usage && j.usage.total_tokens};
+      return draft;
     }
   },
-  */
 };
 
 /* ---------- Драйверы штрихкода ---------- */
@@ -208,15 +246,21 @@ const SCANNER = {
 };
 
 /* ---------- Фасад, которым пользуются экраны ---------- */
+const PROXY_KEY = 'kalorika.proxy';
+
 const AI = {
-  vision:'none',        // ключ из FOOD_VISION_DRIVERS
+  vision:'gigachat',       // ключ из FOOD_VISION_DRIVERS
   barcode:'openfoodfacts', // ключ из BARCODE_DRIVERS
-  endpoint:null,        // URL прокси, когда появится
+
+  /* Адрес прокси хранится отдельно от дневника: он про устройство, а не про данные */
+  get endpoint(){ try{ return localStorage.getItem(PROXY_KEY) || ''; }catch(e){ return ''; } },
+  set endpoint(v){ try{ v ? localStorage.setItem(PROXY_KEY, v) : localStorage.removeItem(PROXY_KEY); }catch(e){} },
 
   get visionDriver(){  return FOOD_VISION_DRIVERS[this.vision]  || FOOD_VISION_DRIVERS.none; },
   get barcodeDriver(){ return BARCODE_DRIVERS[this.barcode]     || BARCODE_DRIVERS.mock; },
 
-  visionAvailable(){  return !!this.visionDriver.available; },
+  /* Драйвер есть — мало. Без адреса прокси он всё равно не работает. */
+  visionAvailable(){  return !!this.visionDriver.available && !!this.endpoint; },
   barcodeAvailable(){ return !!this.barcodeDriver.available; },
 
   recognizeFood(file){ return this.visionDriver.recognize(file); },

@@ -675,11 +675,12 @@ function photoTab(){
     <div style="font-size:34px;text-align:center;margin-bottom:6px">📷</div>
     <h3 style="text-align:center;margin-bottom:8px">Распознавание пока не подключено</h3>
     <p class="muted" style="font-size:14px;line-height:1.45;margin:0 0 14px;text-align:center">
-      Добавьте блюдо по штрихкоду или через поиск — расчёт и правка порции работают одинаково.</p>
-    <div class="btn-row">
+      Укажите адрес прокси в профиле — или добавьте блюдо по штрихкоду и через поиск.</p>
+    <div class="btn-row" style="margin-bottom:8px">
       <button class="btn btn-ghost btn-sm" style="flex:1" data-act="addTabTo" data-v="barcode">Штрихкод</button>
       <button class="btn btn-dark btn-sm" style="flex:1" data-act="addTabTo" data-v="manual">Ввести вручную</button>
     </div>
+    <button class="btn btn-ghost btn-sm" style="width:100%" data-go="#/profile">Настроить распознавание</button>
   </div>`;
 }
 
@@ -728,21 +729,6 @@ function manualTab(){
     ${CATS.map(c=>`<button class="chip ${S.ui.addCat===c.id?'on':''}" data-c="${c.id}">${c.emoji} ${c.name}</button>`).join('')}
   </div>
   <div id="results">${foodResults('')}</div>`;
-}
-
-/* Поиск по-русски: «курица» должна находить «Куриная грудка».
-   Полноценная морфология тут избыточна — хватает отсечения окончаний. */
-const stem = w => w.toLowerCase().replace(/ё/g,'е')
-  .replace(/(ями|ами|иями|ого|его|ыми|ими|ая|яя|ые|ие|ой|ей|ом|ем|ах|ях|ов|ев|ы|и|а|я|у|ю|е|о)$/,'');
-
-function foodMatches(name, query){
-  const qs = query.split(/[\s,]+/).filter(Boolean).map(stem);
-  const ws = name.split(/[\s,.()\-–]+/).filter(Boolean).map(stem);
-  return qs.every(t => t.length >= 2 && ws.some(w =>
-    w.startsWith(t)
-    || (t.startsWith(w) && w.length >= 3)
-    /* «курица» и «куриная» дают разные основы — спасает общий корень */
-    || (t.length >= 4 && w.length >= 4 && t.slice(0,4) === w.slice(0,4))));
 }
 
 /* Что пользователь ест чаще всего — по всей истории дневника */
@@ -887,7 +873,10 @@ function vPortion(){
 
   ${d.photo?`<div style="height:150px;border-radius:var(--r-lg);background:url(${d.photo}) center/cover;margin-bottom:14px"></div>`:''}
   <h1>${d.emoji} ${esc(d.name)}</h1>
-  <p class="sub">Порция ${grams} г · ${d.ing.length} ${plural(d.ing.length,'ингредиент','ингредиента','ингредиентов')}</p>
+  <p class="sub">Порция ${grams} г · ${d.ing.length} ${plural(d.ing.length,'ингредиент','ингредиента','ингредиентов')}${
+    typeof d.confidence === 'number' ? ` · уверенность ${Math.round(d.confidence*100)}%` : ''}</p>
+  ${d.meta ? `<p class="tiny" style="margin:-12px 0 14px">${esc(d.meta.model||'')}${
+    d.meta.ms?` · ${(d.meta.ms/1000).toFixed(1)} с`:''}${d.meta.tokens?` · ${d.meta.tokens} токенов`:''}</p>` : ''}
 
   <div class="hero">
     <div class="kcal">
@@ -904,7 +893,8 @@ function vPortion(){
   <div id="ings">${d.ing.map((i,idx)=>{
     const f = ingInfo(i);
     return `<div class="ing">
-      <div class="b"><b>${esc(f.name)}</b><small class="num" data-kcal="${idx}">${Math.round(f.kcal*i.g/100)} ккал</small></div>
+      <div class="b"><b>${esc(f.name)}</b>${f.fromModel?'<span class="tag warn" style="margin-left:6px;font-size:10px;padding:2px 7px">оценка</span>':''}
+        <small class="num" data-kcal="${idx}">${Math.round(f.kcal*i.g/100)} ккал</small></div>
       <div class="stepper">
         <button data-act="gram" data-i="${idx}" data-d="-10">−</button>
         <input class="num" type="number" data-g="${idx}" value="${i.g}">
@@ -913,6 +903,9 @@ function vPortion(){
       <button class="skip" data-act="delIng" data-i="${idx}" style="color:var(--ink-3);background:none;border:0;font-size:18px;cursor:pointer">×</button>
     </div>`;
   }).join('')}</div>
+
+  ${d.ing.some(i=>i.custom && i.custom.fromModel) ? `<p class="tiny" style="margin:2px 0 10px">
+    Помеченные «оценка» продукты модель посчитала сама — их нет в базе. Числа приблизительные.</p>` : ''}
 
   <select id="add-ing" style="margin-bottom:10px">
     <option value="">+ Добавить ингредиент</option>
@@ -1583,14 +1576,17 @@ function vProfile(){
 
   <h2>Распознавание</h2>
   <div class="card">
-    <div class="exlist-row"><div class="b"><b>Фото блюда</b>
-      <small>${AI.visionAvailable()?'работает':'провайдер не подключён'}</small></div>
-      <div class="w">${esc(AI.visionDriver.label)}</div></div>
-    <div class="exlist-row"><div class="b"><b>Штрихкод</b>
-      <small>${AI.barcodeAvailable()?'работает':'провайдер не подключён'}</small></div>
-      <div class="w">${esc(AI.barcodeDriver.label)}</div></div>
-    <p class="tiny" style="margin:10px 0 0">Драйверы переключаются в <code>providers.js</code>.
-      Контракт один, экраны при смене провайдера не меняются.</p>
+    <label class="field"><span>Адрес прокси распознавания</span>
+      <input id="pf-proxy" value="${esc(AI.endpoint)}" placeholder="http://localhost:4322" inputmode="url"></label>
+    <div class="btn-row">
+      <button class="btn btn-ghost btn-sm" style="flex:1" data-act="proxyCheck">Проверить</button>
+      <button class="btn btn-dark btn-sm" style="flex:1" data-act="proxySave">Сохранить адрес</button>
+    </div>
+    <div id="proxy-status" class="tiny" style="margin-top:10px">
+      Фото: ${AI.visionAvailable()?`подключено · ${esc(AI.visionDriver.label)}`:'адрес не задан'} ·
+      штрихкод: ${esc(AI.barcodeDriver.label)}</div>
+    <p class="tiny" style="margin:8px 0 0">Ключ GigaChat живёт на прокси, в приложение не попадает.
+      Прокси на <code>localhost</code> виден только этому устройству — телефону нужен публичный https-адрес.</p>
   </div>
 
   <h2>Данные</h2>
@@ -1639,6 +1635,32 @@ ACTIONS.exportData = () => {
 };
 ACTIONS.resetData = () => { if(confirm('Удалить все данные и начать заново?')) reset(); };
 ACTIONS.importPick = () => $('#import-file')?.click();
+
+ACTIONS.proxySave = () => {
+  const v = ($('#pf-proxy').value || '').trim().replace(/\/$/,'');
+  if(v && !/^https?:\/\//.test(v)) return toast('Адрес должен начинаться с http:// или https://');
+  AI.endpoint = v;
+  render(); toast(v ? 'Адрес сохранён' : 'Распознавание отключено');
+};
+
+ACTIONS.proxyCheck = async () => {
+  const v = ($('#pf-proxy').value || '').trim().replace(/\/$/,'');
+  const box = $('#proxy-status');
+  if(!v) return toast('Введите адрес прокси');
+  box.textContent = 'Проверяем…';
+  try{
+    const r = await fetch(v + '/health');
+    const j = await r.json();
+    box.innerHTML = j.ok
+      ? `Прокси отвечает. Ключ ${j.hasKey?'на месте':'<b>не найден</b>'}, scope ${esc(j.scope||'—')}` +
+        (j.tokenCached ? `, токен живёт ещё ${Math.round(j.tokenExpiresIn/60)} мин` : '')
+      : 'Прокси ответил, но не готов';
+  }catch(e){
+    box.textContent = 'Не достучались. Прокси запущен? Адрес верный? '
+      + (location.protocol === 'https:' && v.startsWith('http://')
+         ? 'Страница по https не может ходить на http — нужен https-адрес прокси.' : '');
+  }
+};
 
 function applyImport(text){
   let obj;

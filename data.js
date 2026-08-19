@@ -436,6 +436,43 @@ const FOODS = [
 ];
 const FOOD_BY_ID = Object.fromEntries(FOODS.map(f=>[f.id,f]));
 
+/* Поиск по-русски: «курица» должна находить «Куриная грудка».
+   Полноценная морфология тут избыточна — хватает отсечения окончаний. */
+const stem = w => w.toLowerCase().replace(/ё/g,'е')
+  .replace(/(ями|ами|иями|ого|его|ыми|ими|ая|яя|ые|ие|ой|ей|ом|ем|ах|ях|ов|ев|ы|и|а|я|у|ю|е|о)$/,'');
+
+/* Подбор продукта из базы по свободному названию — для распознавания по фото.
+   Побеждает тот, у кого больше совпавших слов; при равенстве — более короткое название. */
+function findFoodByName(name){
+  if(!name) return null;
+  const q = String(name).toLowerCase().trim();
+  const exact = FOODS.find(f => f.name.toLowerCase() === q);
+  if(exact) return exact;
+
+  const qs = q.split(/[\s,]+/).filter(Boolean).map(stem);
+  let best = null, bestScore = 0;
+  for(const f of FOODS){
+    if(!foodMatches(f.name, q)) continue;
+    const ws = f.name.toLowerCase().split(/[\s,.()\-–]+/).filter(Boolean).map(stem);
+    const score = qs.filter(t => ws.some(w => w.startsWith(t) || t.startsWith(w))).length;
+    if(score > bestScore || (score === bestScore && best && f.name.length < best.name.length)){
+      best = f; bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
+function foodMatches(name, query){
+  const qs = query.split(/[\s,]+/).filter(Boolean).map(stem);
+  const ws = name.split(/[\s,.()\-–]+/).filter(Boolean).map(stem);
+  return qs.every(t => t.length >= 2 && ws.some(w =>
+    w.startsWith(t)
+    || (t.startsWith(w) && w.length >= 3)
+    /* «курица» и «куриная» дают разные основы — спасает общий корень */
+    || (t.length >= 4 && w.length >= 4 && t.slice(0,4) === w.slice(0,4))));
+}
+
+
 /* Фикстуры блюд — для проверки драйверов распознавания, когда они появятся */
 const DISHES = [
   {name:'Паста болоньезе', emoji:'🍝', ing:[
