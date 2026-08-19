@@ -165,7 +165,7 @@ function heicToJpeg(buf){
 }
 
 /* ---------- Распознавание блюда ---------- */
-const DEFAULT_MODEL = process.env.GIGACHAT_MODEL || 'GigaChat-2-Max';
+const DEFAULT_MODEL = process.env.GIGACHAT_MODEL || 'GigaChat-3-Ultra';
 
 /* Ответы GigaChat на человеческий */
 function explain(status, raw){
@@ -202,6 +202,7 @@ async function recognize({prompt, image, mime, model}){
   const payload = JSON.stringify({
     model: model || DEFAULT_MODEL,
     temperature: 0.1,        /* распознавание, а не сочинение */
+    max_tokens: 1500,        /* без этого ответ обрывается на середине JSON */
     messages: [{ role:'user', content: prompt, attachments:[fileId] }],
   });
 

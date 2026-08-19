@@ -1619,7 +1619,7 @@ function vProfile(){
 
     <label class="field"><span>Модель</span>
       <select id="pf-model">
-        ${['GigaChat-2-Pro','GigaChat-2-Max','GigaChat-3-Ultra']
+        ${['GigaChat-3-Ultra','GigaChat-2-Max','GigaChat-2-Pro']
           .map(m=>`<option value="${m}" ${AI.model===m?'selected':''}>${m}</option>`).join('')}
       </select></label>
     <p class="tiny" style="margin:-6px 0 12px">Базовая GigaChat-2 картинки не понимает, поэтому её тут нет.</p>

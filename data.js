@@ -449,7 +449,10 @@ function findFoodByName(name){
   const exact = FOODS.find(f => f.name.toLowerCase() === q);
   if(exact) return exact;
 
-  const qs = q.split(/[\s,]+/).filter(Boolean).map(stem);
+  /* Требуем совпадения всех слов запроса. Свободное совпадение по одному слову
+     пробовали — оно ловит ложные корни: «Гречка» уходила в «Греческий салат»,
+     «Грибы жареные» в «Грибной суп». Лучше не найти, чем найти не то. */
+  const qs = q.split(/[\s,.()\-–]+/).filter(Boolean).map(stem);
   let best = null, bestScore = 0;
   for(const f of FOODS){
     if(!foodMatches(f.name, q)) continue;
