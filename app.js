@@ -917,6 +917,7 @@ function vPortion(){
       <div class="stepper">
         <button data-act="gram" data-i="${idx}" data-d="-10">−</button>
         <input class="num" type="number" data-g="${idx}" value="${i.g}">
+        <span class="unit">г</span>
         <button data-act="gram" data-i="${idx}" data-d="10">+</button>
       </div>
       <button class="skip" data-act="delIng" data-i="${idx}" style="color:var(--ink-3);background:none;border:0;font-size:18px;cursor:pointer">×</button>
@@ -926,10 +927,10 @@ function vPortion(){
   ${d.ing.some(i=>i.custom && i.custom.fromModel) ? `<p class="tiny" style="margin:2px 0 10px">
     Помеченные «оценка» продукты модель посчитала сама — их нет в базе. Числа приблизительные.</p>` : ''}
 
-  <select id="add-ing" style="margin-bottom:10px">
-    <option value="">+ Добавить ингредиент</option>
-    ${FOODS.map(f=>`<option value="${f.id}">${f.name}</option>`).join('')}
-  </select>
+  <div class="card flat" style="margin-bottom:10px">
+    <input id="ing-search" placeholder="+ Добавить ингредиент" autocomplete="off">
+    <div id="ing-results"></div>
+  </div>
 
   <div class="sticky-cta">
     <div class="btn-row">
@@ -985,15 +986,30 @@ ACTIONS.saveFood = () => {
   S.draft = null; save(); go('#/diary'); toast(`${e.name} · ${e.kcal} ккал добавлено`);
 };
 
+/* Подсказки при добавлении ингредиента: тот же поиск, что и в базе продуктов */
+function ingSuggestions(term){
+  const t = (term||'').trim();
+  if(t.length < 2) return '';
+  const list = FOODS.filter(f=>foodMatches(f.name, t.toLowerCase())).slice(0,8);
+  if(!list.length) return `<div class="tiny" style="padding:10px 2px">Ничего не нашлось</div>`;
+  return list.map(f=>`
+    <div class="exlist-row" style="cursor:pointer" data-act="addIng" data-id="${f.id}">
+      <div class="b"><b>${esc(f.name)}</b><small>${CAT_BY_ID[f.cat]?.name||''}</small></div>
+      <div class="w num">${f.kcal} ккал/100 г</div>
+    </div>`).join('');
+}
+
+ACTIONS.addIng = ds => {
+  S.draft.ing.push({id:ds.id, g:100});
+  save(); render();
+};
+
 function bindPortion(){
+  const q = $('#ing-search');
+  if(q) q.oninput = () => { $('#ing-results').innerHTML = ingSuggestions(q.value); bind(); };
   document.querySelectorAll('[data-g]').forEach(inp=>{
     inp.oninput = () => { S.draft.ing[+inp.dataset.g].g = clamp(+inp.value||0,0,3000); save(); repaintPortion(); };
   });
-  const sel = $('#add-ing');
-  if(sel) sel.onchange = () => {
-    if(!sel.value) return;
-    S.draft.ing.push({id:sel.value, g:100}); save(); render();
-  };
 }
 
 /* ============================================================
