@@ -26,18 +26,31 @@ const defaultState = () => ({
 
 let S;
 
+/* Слияние сохранения с дефолтами: новые поля должны появляться у старых сохранений */
+function mergeState(obj){
+  const d = defaultState();
+  /* Значения по умолчанию запоминаем до слияния — Object.assign затрёт ссылки */
+  const dProfile = d.profile, dUi = d.ui, dSchedule = d.schedule;
+  const merged = Object.assign(d, obj);
+  merged.profile  = Object.assign(dProfile,  obj.profile  || {});
+  merged.ui       = Object.assign(dUi,       obj.ui       || {});
+  merged.schedule = Object.assign(dSchedule, obj.schedule || {});
+  return merged;
+}
+
+/* Похоже ли это на наше сохранение — чтобы не затереть данные чужим файлом */
+function looksLikeState(o){
+  return !!o && typeof o === 'object'
+    && typeof o.profile === 'object' && o.profile !== null
+    && typeof o.food === 'object'    && o.food !== null
+    && Array.isArray(o.workouts);
+}
+
 function load(){
   try{
     const raw = localStorage.getItem(KEY);
     if(!raw) return seed(defaultState());
-    const s = JSON.parse(raw), d = defaultState();
-    /* Значения по умолчанию запоминаем до слияния — Object.assign затрёт ссылки */
-    const dProfile = d.profile, dUi = d.ui, dSchedule = d.schedule;
-    const merged = Object.assign(d, s);
-    merged.profile  = Object.assign(dProfile,  s.profile  || {});
-    merged.ui       = Object.assign(dUi,       s.ui       || {});
-    merged.schedule = Object.assign(dSchedule, s.schedule || {});
-    return merged;
+    return mergeState(JSON.parse(raw));
   }catch(e){ return seed(defaultState()); }
 }
 function save(){ localStorage.setItem(KEY, JSON.stringify(S)); }
@@ -1583,8 +1596,16 @@ function vProfile(){
   <h2>Данные</h2>
   <div class="card">
     <button class="btn btn-ghost" data-act="exportData" style="margin-bottom:10px">Выгрузить JSON</button>
+    <button class="btn btn-ghost" data-act="importPick" style="margin-bottom:10px">Загрузить из JSON</button>
+    <input type="file" id="import-file" accept="application/json,.json" hidden>
     <button class="btn btn-ghost" data-act="resetData" style="color:var(--red)">Сбросить всё</button>
-    <p class="tiny" style="margin:10px 0 0">Данные лежат в localStorage браузера. Чистка кэша их удалит — делайте выгрузку.</p>
+    <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+      <div class="tiny">Данные привязаны к адресу</div>
+      <div class="num" style="font-size:13px;font-weight:600;word-break:break-all">${esc(location.origin + location.pathname)}</div>
+      <p class="tiny" style="margin:8px 0 0">По другому адресу приложение будет пустым — это не потеря,
+        записи остаются на прежнем. Переносить через выгрузку и загрузку файла.
+        Чистка данных сайта тоже стирает записи, поэтому выгрузку стоит делать регулярно.</p>
+    </div>
   </div>
 
   <div class="sticky-cta"><button class="btn btn-primary" data-act="saveProfile">Сохранить</button></div>
@@ -1617,8 +1638,38 @@ ACTIONS.exportData = () => {
   toast('Файл выгружен');
 };
 ACTIONS.resetData = () => { if(confirm('Удалить все данные и начать заново?')) reset(); };
+ACTIONS.importPick = () => $('#import-file')?.click();
+
+function applyImport(text){
+  let obj;
+  try{ obj = JSON.parse(text); }
+  catch(e){ return toast('Это не JSON — файл не читается'); }
+  if(!looksLikeState(obj)) return toast('Файл не похож на выгрузку Калорийки');
+
+  const days = Object.keys(obj.food || {}).length;
+  const wk   = (obj.workouts || []).length;
+  const name = (obj.profile && obj.profile.name) || 'без имени';
+  const ok = confirm(
+    `В файле: ${name}, дней питания ${days}, тренировок ${wk}.\n\n` +
+    `Текущие данные будут заменены. Продолжить?`);
+  if(!ok) return;
+
+  S = mergeState(obj);
+  S.session = null; S.draft = null; S.draftProg = null;   // черновики не переносим
+  save(); go('#/today'); render();
+  toast(`Загружено: ${days} дней питания, ${wk} тренировок`);
+}
 
 function bindProfile(){
+  const file = $('#import-file');
+  if(file) file.onchange = () => {
+    const f = file.files[0]; if(!f) return;
+    const rd = new FileReader();
+    rd.onload = () => applyImport(rd.result);
+    rd.onerror = () => toast('Файл не прочитался');
+    rd.readAsText(f);
+    file.value = '';
+  };
   const auto = $('#pf-auto');
   if(auto) auto.onchange = () => {
     ['pf-kcal','pf-p','pf-f','pf-c'].forEach(id=>{ const e=$('#'+id); if(e) e.disabled = auto.checked; });
